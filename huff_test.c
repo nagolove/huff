@@ -1,3 +1,6 @@
+// vim: set colorcolumn=85
+// vim: fdm=marker
+#include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
@@ -31,6 +34,36 @@ void huff_shutdown(Huff *h) {
     assert(h);
 }
 
+// Добавляет узел и возвращает новый корень дерева.
+static HuffTreeNode *huff_tree_add(HuffTreeNode *root, int cnt, int value) {
+    HuffTreeNode *cur = root, *new = calloc(1, sizeof(*new));
+    assert(new);
+    new->cnt = cnt;
+    new->val = value;
+
+    if (!root)
+        return new;
+
+    while (true) {
+        if (cnt >= cur->cnt) {
+            if (!cur->right) {
+                cur->right = new;
+                return root;
+            } else {
+                cur = cur->right;
+            }
+        } else {
+            if (!cur->left) {
+                cur->left = new;
+                return root;
+            } else
+                cur = cur->left;
+        }
+    }
+
+    return root;
+}
+
 /*
 Каждая запись журнала представляет собой правильное Луа выражение.
 Все выражения разделены запятыми. Вложенная группировка производится таблицами.
@@ -59,14 +92,44 @@ static int huff_cmp(const void *a, const void *b) {
     return *(uint64_t*)a - *(uint64_t*)b;
 }
 
+FILE *dot_file = NULL;
+
+static void dot_init(const char *dot_fname) {
+    // {{{
+    assert(dot_file == NULL);
+    dot_file = fopen(dot_fname, "w");
+    assert(dot_file);
+
+    const char *preambule = 
+        "digraph binary_tree {\n"
+        "node [shape=circle, style=filled, color=\"lightblue\"]\n"  
+        "edge [color=\"black\"]  // Определяем стиль ребер\n";
+
+    fprintf(dot_file, "%s", preambule);
+    // }}}
+}
+
+static void dot_shutdown() {
+    // {{{
+    assert(dot_file);
+    fprintf(dot_file, "%s", "}");
+    fclose(dot_file);
+    dot_file = NULL;
+    // }}}
+}
+
 static void huff_tree_walk(HuffTreeNode *node) {
     if (!node)
         return;
 
-    if (node->left)
+    if (node->left) {
+        fprintf(dot_file, "%d -> %d\n", node->cnt, node->left->cnt);
         huff_tree_walk(node->left);
-    if (node->right)
+    }
+    if (node->right) {
+        fprintf(dot_file, "%d -> %d\n", node->cnt, node->right->cnt);
         huff_tree_walk(node->right);
+    }
 
     printf("'huff_tree_walk', val = %d,\n", node->val);
 }
@@ -141,10 +204,13 @@ void huff_tree_build(Huff *h, const char *data, size_t data_sz) {
     for (size_t i = 0; i < freq_len; i++) {
         int freq = h->freq[i];
         if (freq > 0) {
+            /*
             h->nodes[h->nodes_num] = calloc(1, sizeof(*h->nodes[0]));
             h->nodes[h->nodes_num]->val = i;
             h->nodes[h->nodes_num]->cnt = freq;
             h->nodes_num++;
+            */
+            h->root = huff_tree_add(h->root, freq, i);
         }
     }
 
@@ -156,6 +222,7 @@ void huff_tree_build(Huff *h, const char *data, size_t data_sz) {
 
     int i = 0;
     //while (h->nodes_num) {
+    /*
     while (h->nodes_num != 1) {
         HuffTreeNode *node = h->nodes[i];
         HuffTreeNode *node_next = h->nodes[i + 1];
@@ -187,6 +254,7 @@ void huff_tree_build(Huff *h, const char *data, size_t data_sz) {
 
         h->nodes_num--;
     }
+    */
 
     huff_tree_walk(h->root);
 
@@ -213,8 +281,12 @@ static void test_init_tree_build() {
     Huff h = {};
     huff_init(&h);
 
+    dot_init("tree1.dot");
+
     const char *input = "AABACDACA";
     huff_tree_build(&h, input, strlen(input));
+
+    dot_shutdown();
 
     huff_shutdown(&h);
 }
