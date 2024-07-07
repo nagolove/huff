@@ -4,6 +4,8 @@ set -Exeuo pipefail
 
 gcc -o huff_test ./huff_test.c -fsanitize=address -g3
 
+./huff_test
+
 #files=(
     #"1.dot"
     #"2.dot"
