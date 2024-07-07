@@ -19,7 +19,7 @@ define r
 end
 
 
-b 252
+b 275
 define I
     p h->nodes_num
     p_nodes
