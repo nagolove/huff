@@ -23,12 +23,19 @@ typedef struct HuffTreeNode {
         cnt; // сколько раз встречается
 } HuffTreeNode;
 
+struct HuffBitRepr {
+    unsigned char bits: 8;      // битовый код, от младшего бита к старшему
+    unsigned char bits_num: 8;  // сколько битов используется в bits
+} __attribute__((packed));
+
 // Оригинальное название?
 typedef struct Huff {
-    uint64_t     freq[256];
+    struct HuffBitRepr map[256];
     HuffTreeNode *root, *nodes[1024];
     size_t        nodes_num;
 } Huff;
+
+static void huff_tree_free(HuffTreeNode *node);
 
 void huff_init(Huff *h) {
     assert(h);
@@ -36,6 +43,38 @@ void huff_init(Huff *h) {
 
 void huff_shutdown(Huff *h) {
     assert(h);
+    if (h->root) 
+        huff_tree_free(h->root);
+}
+
+static void quicksort(int64_t *A, size_t len, int64_t *indices) {
+    if (len < 2) return;
+
+    int64_t pivot = A[len / 2], temp, i, j;
+
+    for (i = 0, j = len - 1; ; i++, j--) {
+        while (A[i] > pivot) i++;
+        while (A[j] < pivot) j--;
+
+        if (i >= j) break;
+
+        temp = A[i];
+        A[i]     = A[j];
+        A[j]     = temp;
+
+        if (indices) {
+            temp = indices[i];
+            indices[i]     = indices[j];
+            indices[j]     = temp;
+        }
+    }
+
+    quicksort(A, i, indices);
+
+    if (indices)
+        quicksort(A + i, len - i, indices + i);
+    else
+        quicksort(A + i, len - i, indices);
 }
 
 // Добавляет узел и возвращает новый корень дерева.
@@ -76,7 +115,7 @@ static HuffTreeNode *huff_tree_add(HuffTreeNode *root, int cnt, int value) {
  */
 
 static void huff_tree_free(HuffTreeNode *node) {
-    printf("'huff_tree_free'\n");
+    //printf("'huff_tree_free'\n");
 
     if (!node)
         return;
@@ -93,12 +132,21 @@ static void huff_tree_free(HuffTreeNode *node) {
     free(node);
 }
 
+/*
 static int huff_cmp(const void *a, const void *b) {
     return *(uint64_t*)b - *(uint64_t*)a;
     //return *(uint64_t*)a - *(uint64_t*)b;
 }
+*/
 
 FILE *dot_file = NULL;
+const char *dot_preambule = 
+"digraph binary_tree {\n"
+"   rankdir=TB; // Top to Bottom, дерево будет вертикальным\n"
+"   dpi=300\n" 
+"   concentrate = true // исключение повторяющихся связей\n"
+"   node [shape=circle, style=filled, color=\"lightblue\"]\n"  
+"   edge [color=\"black\"]  // Определяем стиль ребер\n\n";
 
 static void dot_init(const char *dot_fname) {
     // {{{
@@ -106,12 +154,7 @@ static void dot_init(const char *dot_fname) {
     dot_file = fopen(dot_fname, "w");
     assert(dot_file);
 
-    const char *preambule = 
-        "digraph binary_tree {\n"
-        "node [shape=circle, style=filled, color=\"lightblue\"]\n"  
-        "edge [color=\"black\"]  // Определяем стиль ребер\n";
-
-    fprintf(dot_file, "%s", preambule);
+    fprintf(dot_file, "%s", dot_preambule);
     // }}}
 }
 
@@ -169,24 +212,46 @@ static void huff_tree_ins(
 }
 */
 
-/*
 static int huff_cmp_node(const void *a, const void *b) {
     const HuffTreeNode **_a = a, **_b = b;
     if (*_a && *_b)
-        return (*_a)->cnt - (*_b)->cnt;
+        //return (*_a)->cnt - (*_b)->cnt;
+        return (*_b)->cnt - (*_a)->cnt;
     else
         return 0;
 }
-*/
+//*/
 
-static bool iter_print_dot(HuffTreeNode *node, void *udata) {
+static bool iter_dot_print_name(HuffTreeNode *node, void *udata) {
+    FILE *file = udata;
+    assert(file);
+    const char *fmt = "%ld [label=\"cnt %d\n val '%c'\"]\n";
+    if (node->val == -1)
+        fmt = "%ld [label=\"cnt %d\n val %d\"]\n";
+
+    //fprintf(dot_file, fmt, node->cnt, node->cnt, node->val);
+    fprintf(file, fmt, (intptr_t)node, node->cnt, node->val);
+
+    return true;
+}
+
+static bool iter_dot_print_link(HuffTreeNode *node, void *udata) {
+    FILE *file = udata;
+    assert(file);
     if (node->left) {
-        fprintf(dot_file, "%d -> %d\n", node->cnt, node->left->cnt);
-        printf("%d -> %d\n", node->cnt, node->left->cnt);
+        //fprintf(dot_file, "%d -> %d\n", node->cnt, node->left->cnt);
+        //printf("%d -> %d\n", node->cnt, node->left->cnt);
+        fprintf(
+            file, "%ld -> %ld\n", (intptr_t)node, (intptr_t)node->left
+        );
+        //printf("%d -> %d\n", node->cnt, node->left->cnt);
     }
     if (node->right) {
-        fprintf(dot_file, "%d -> %d\n", node->cnt, node->right->cnt);
-        printf("%d -> %d\n", node->cnt, node->right->cnt);
+        //fprintf(dot_file, "%d -> %d\n", node->cnt, node->right->cnt);
+        fprintf(
+            file, "%ld -> %ld\n", (intptr_t)node, (intptr_t)node->right
+        );
+        //printf("%d -> %d\n", node->cnt, node->right->cnt);
     }
     return true;
 }
@@ -197,6 +262,44 @@ static bool iter_print(HuffTreeNode *node, void *udata) {
         node->val, node->cnt
     );
     return true;
+}
+
+static void huff_build_prefixes(
+    Huff *h, HuffTreeNode *node, int *bits, int bits_num
+) {
+    if (!node)
+        return;
+
+    if (node->val != -1) {
+        printf("'huff_build_prefixes', %d = { ", node->val);
+        for (int i = 0; i < bits_num; i++) {
+            printf("%d, ", bits[i]);
+        }
+        printf(" }, \n");
+    }
+
+    if (node->left) {
+        bits[bits_num++] = 1;
+        huff_build_prefixes(h, node->left, bits, bits_num);
+        bits_num--;
+    }
+    if (node->right) {
+        bits[bits_num++] = 0;
+        huff_build_prefixes(h, node->right, bits, bits_num);
+        bits_num--;
+    }
+
+}
+
+static void dot_tmp_write(HuffTreeNode *preuse_root, int i) {
+    char fname[128] = {};
+    sprintf(fname, "tmp_%03d.dot", i);
+    FILE *tmp_dot_file = fopen(fname, "w");
+    fprintf(tmp_dot_file, "%s", dot_preambule);
+    huff_tree_walk(preuse_root, iter_dot_print_name, tmp_dot_file);
+    huff_tree_walk(preuse_root, iter_dot_print_link, tmp_dot_file);
+    fprintf(tmp_dot_file, "\n}\n");
+    fclose(tmp_dot_file);
 }
 
 // Построить дерево для данных определенной длины.
@@ -211,31 +314,43 @@ void huff_tree_build(Huff *h, const char *data, size_t data_sz) {
     if (!data_sz)
         return;
 
-    memset(h->freq, 0, sizeof(h->freq));
+    int64_t freq[256] = {}, indices[256] = {};
+
+    //memset(freq, 0, sizeof(freq));
     for (size_t i = 0; i < data_sz; i++) {
-        h->freq[(int)data[i]]++;
+        freq[(int)data[i]]++;
     }
 
+    const size_t freq_len = sizeof(freq) / sizeof(freq[0]);
+
+    /*
     printf("'huff_tree_load', {\n");
-    size_t freq_len = sizeof(h->freq) / sizeof(h->freq[0]);
     for (size_t i = 0; i < freq_len; i++) {
-        if (h->freq[i])
+        if (freq[i])
             printf(
                 "freq[%zu] = %lu,\n", 
-                i, h->freq[i]
+                i, freq[i]
             );
     }
     printf("'huff_tree_load', }\n");
+    */
 
     printf("'sorting',\n");
-    qsort(h->freq, freq_len, sizeof(h->freq[0]), huff_cmp);
+
+    for (size_t i = 0; i < freq_len; i++) {
+        indices[i] = i;
+    }
+
+    // Здесь сортируются количества встреч, но теряются индексы
+    //qsort(freq, freq_len, sizeof(freq[0]), huff_cmp);
+    quicksort(freq, freq_len, indices);
 
     printf("'huff_tree_load', {\n");
     for (size_t i = 0; i < freq_len; i++) {
-        if (h->freq[i])
+        if (freq[i])
             printf(
                 "freq[%zu] = %lu,\n", 
-                i, h->freq[i]
+                i, freq[i]
             );
     }
     printf("'huff_tree_load', }\n");
@@ -244,10 +359,10 @@ void huff_tree_build(Huff *h, const char *data, size_t data_sz) {
     h->nodes_num = 0;
 
     for (size_t i = 0; i < freq_len; i++) {
-        if (h->freq[i]) {
+        if (freq[i]) {
             HuffTreeNode *new_node = calloc(1, sizeof(*new_node));
-            new_node->val = i;
-            new_node->cnt = h->freq[i];
+            new_node->val = indices[i];
+            new_node->cnt = freq[i];
             h->nodes[h->nodes_num++] = new_node;
         }
     }
@@ -275,16 +390,18 @@ void huff_tree_build(Huff *h, const char *data, size_t data_sz) {
         new->right = right;
         new->val = -1;
 
+        dot_tmp_write(new, i);
+
         h->nodes[h->nodes_num - 1] = NULL;
         h->nodes[h->nodes_num - 2] = NULL;
 
         h->nodes[h->nodes_num - 2] = new;
-        //h->nodes_num -= 2;
         h->nodes_num -= 1;
 
-        //h->nodes[h->nodes_num] = new;
-
         // XXX: Есть необходимость пересортировать h->nodes?
+        qsort(h->nodes, h->nodes_num, sizeof(h->nodes[0]), huff_cmp_node);
+        
+        i++;
     }
     //*/
 
@@ -292,8 +409,12 @@ void huff_tree_build(Huff *h, const char *data, size_t data_sz) {
     h->root = h->nodes[0];
     huff_tree_walk(h->root, iter_print, NULL);
 
-    huff_tree_walk(h->root, iter_print_dot, NULL);
+    huff_tree_walk(h->root, iter_dot_print_name, dot_file);
+    huff_tree_walk(h->root, iter_dot_print_link, dot_file);
 
+    //huff_tree_walk(h->root, iter_build_prefixes, h);
+    int bits[256] = {};
+    huff_build_prefixes(h, h->root, bits, 0);
 }
 
 // Загружает дерево(словарь) из данных по указателю.
@@ -313,14 +434,17 @@ void *huff_tree_write(Huff *h, size_t *tree_sz) {
     return NULL;
 }
 
-static void test_init_tree_build() {
+static void test_init_tree_build_short_str() {
     Huff h = {};
     huff_init(&h);
 
-    dot_init("tree1.dot");
+    dot_init("tree_short.dot");
 
-    const char *input = "AABACDACA";
-    printf("'test_init_tree_build', input = '%s',\n", input);
+    //                   1234567890
+    //const char *input = "AABACDACAZ";
+    const char *input = "so much words wow many compression";
+
+    printf("'test_init_tree_build_short_str', input = '%s',\n", input);
     huff_tree_build(&h, input, strlen(input));
 
     dot_shutdown();
@@ -328,7 +452,30 @@ static void test_init_tree_build() {
     huff_shutdown(&h);
 }
 
+static void test_init_tree_build_long_str() {
+    Huff h = {};
+    huff_init(&h);
 
+    dot_init("tree_long.dot");
+
+    //                   1234567890
+    const char *input =
+        "Instead of comparing elements explicitly, this solution puts the two "
+        "elements-to-compare in a sum. After evaluating the sum its terms are "
+        "sorted. Numbers are sorted numerically, strings alphabetically and "
+        "compound expressions by comparing nodes and leafs in a left-to right "
+        "order. Now there are three cases: either the terms stayed put, or "
+        "they were swapped, or they were equal and were combined into one term "
+        "with a factor 2 in front. To not let the evaluator add numbers "
+        "together, each term is constructed as a dotted list.";
+
+    printf("'test_init_tree_build_long_str', input = '%s',\n", input);
+    huff_tree_build(&h, input, strlen(input));
+
+    dot_shutdown();
+
+    huff_shutdown(&h);
+}
 static void test_init_shutdown() {
     Huff h = {};
     huff_init(&h);
@@ -336,8 +483,12 @@ static void test_init_shutdown() {
 }
 
 int main(int argc, char **argv) {
+    //printf("sizeof(struct HuffBitRepr) = %zu\n", sizeof(struct HuffBitRepr));
+    //exit(0);
+
     test_init_shutdown();
-    test_init_tree_build();
+    //test_init_tree_build_short_str();
+    test_init_tree_build_long_str();
 
     return EXIT_SUCCESS;
 }
